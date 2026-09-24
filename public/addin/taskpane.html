@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SAS Cargo Copilot</title>
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-50 text-slate-800 p-3 text-sm">
+  <div class="flex items-center gap-2 mb-3">
+    <span class="font-bold tracking-widest text-blue-900">SAS</span>
+    <span class="text-xs bg-blue-700 text-white px-2 py-0.5 rounded font-mono">CARGO COPILOT</span>
+  </div>
+
+  <button id="analyzeBtn" class="w-full rounded-lg bg-blue-600 text-white font-semibold py-2 hover:bg-blue-700 disabled:opacity-50">
+    Analyze this email
+  </button>
+
+  <div id="status" class="text-xs text-slate-500 mt-2"></div>
+  <div id="results" class="mt-3 space-y-3"></div>
+
+  <script>
+    let currentDraft = '';
+
+    Office.onReady(() => {
+      document.getElementById('analyzeBtn').addEventListener('click', analyze);
+    });
+
+    function setStatus(msg) {
+      document.getElementById('status').innerText = msg;
+    }
+
+    function readBody() {
+      return new Promise((resolve) => {
+        Office.context.mailbox.item.body.getAsync(Office.CoercionType.Text, (r) => {
+          resolve(r.status === Office.AsyncResultStatus.Succeeded ? r.value : '');
+        });
+      });
+    }
+
+    async function analyze() {
+      const item = Office.context.mailbox.item;
+      const from = item.from && item.from.emailAddress ? item.from.emailAddress : '';
+      const company = from.includes('@') ? from.split('@')[1] : 'Unknown';
+      setStatus('Reading email…');
+      const body = await readBody();
+
+      setStatus('Analyzing with SAS Cargo Copilot…');
+      let data;
+      try {
+        const res = await fetch('/api/copilot/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sender: from, senderCompany: company, subject: item.subject, body }),
+        });
+        if (!res.ok) {
+          setStatus('Error: API returned ' + res.status);
+          return;
+        }
+        data = await res.json();
+      } catch (e) {
+        setStatus('Error: ' + e.message);
+        return;
+      }
+      setStatus('');
+      render(data);
+    }
+
+    function render(a) {
+      currentDraft = a.suggestedDraft || '';
+      const alerts = [];
+      if (a.fleetDoorAlert) {
+        alerts.push(`<div class="bg-amber-50 border-l-4 border-amber-500 p-2 rounded text-xs text-amber-900"><strong>Fleet:</strong> ${a.fleetDoorAlert}</div>`);
+      }
+      if (a.requiresSpecialist) {
+        alerts.push(`<div class="bg-red-50 border-l-4 border-red-500 p-2 rounded text-xs text-red-900"><strong>Escalation:</strong> Specialist / Pharma desk required.</div>`);
+      }
+      if (a.contributionNote) {
+        alerts.push(`<div class="bg-indigo-50 border-l-4 border-indigo-500 p-2 rounded text-xs text-indigo-900"><strong>Contribution:</strong> ${a.contributionNote}</div>`);
+      }
+
+      document.getElementById('results').innerHTML = `
+        ${alerts.join('')}
+        <div class="bg-white border rounded-lg p-2 text-xs">
+          <div class="font-bold text-slate-500 uppercase tracking-wider mb-1">Extracted</div>
+          <div class="grid grid-cols-2 gap-1">
+            <div><span class="text-slate-400">Intent:</span> <b>${a.intent || '—'}</b></div>
+            <div><span class="text-slate-400">Route:</span> <b>${a.route || '—'}</b></div>
+            <div><span class="text-slate-400">AWB:</span> <b>${a.awb || '—'}</b></div>
+            <div><span class="text-slate-400">Chargeable:</span> <b>${a.chargeableWeightKg != null ? a.chargeableWeightKg + ' kg' : '—'}</b></div>
+          </div>
+        </div>
+        <div class="bg-white border rounded-lg p-2">
+          <div class="flex justify-between items-center mb-1">
+            <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Draft reply</span>
+            <button id="insertBtn" class="text-xs bg-blue-600 text-white px-2 py-1 rounded font-semibold hover:bg-blue-700">Insert reply</button>
+          </div>
+          <div class="text-xs whitespace-pre-line bg-slate-50 border rounded p-2 leading-normal">${currentDraft}</div>
+        </div>
+      `;
+      document.getElementById('insertBtn').addEventListener('click', () => {
+        const html = currentDraft
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/\n/g, '<br>');
+        Office.context.mailbox.item.displayReplyForm({ htmlBody: html });
+      });
+    }
+  </script>
+</body>
+</html>

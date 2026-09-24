@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SAS Cargo Copilot - Outlook</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="bg-gray-100 font-sans h-screen flex flex-col overflow-hidden text-gray-800">
+  <header class="bg-[#001435] text-white px-4 py-2 flex items-center justify-between border-b border-blue-900">
+    <div class="flex items-center space-x-3">
+      <span class="font-bold tracking-widest text-lg text-white">SAS</span>
+      <span class="text-xs bg-blue-700 text-blue-100 px-2 py-0.5 rounded font-mono">CARGO COPILOT</span>
+      <span class="text-sm font-semibold text-gray-200">Outlook Mail</span>
+    </div>
+    <div class="flex items-center space-x-4 text-sm">
+      <span class="text-gray-300"><i class="fa-solid fa-user-circle mr-1"></i> cargo.support@sas.se</span>
+    </div>
+  </header>
+
+  <div class="flex-1 flex overflow-hidden">
+    <section class="w-80 bg-white border-r border-gray-200 flex flex-col">
+      <div class="p-3 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
+        <span class="font-semibold text-sm text-gray-700">Inbox (Forwarder Desk)</span>
+        <span class="text-xs bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full font-bold" id="email-count">3</span>
+      </div>
+      <div id="email-list" class="overflow-y-auto flex-1 divide-y divide-gray-100"></div>
+    </section>
+
+    <section class="flex-1 bg-white flex flex-col border-r border-gray-200 overflow-y-auto">
+      <div class="p-6 flex-1 flex flex-col" id="reading-pane">
+        <div class="text-gray-400 m-auto text-center">Select an email to view details</div>
+      </div>
+    </section>
+
+    <aside class="w-[440px] bg-slate-50 flex flex-col border-l border-gray-300 shadow-inner">
+      <div class="p-3.5 bg-blue-900 text-white font-semibold flex items-center justify-between text-sm">
+        <span class="flex items-center gap-2">
+          <i class="fa-solid fa-brain text-blue-300"></i> SAS Cargo AI Copilot
+        </span>
+        <span id="confidence-badge" class="text-xs bg-blue-800 px-2 py-0.5 rounded text-blue-200">Ready</span>
+      </div>
+
+      <div id="copilot-pane" class="p-4 flex-1 overflow-y-auto space-y-4">
+        <div class="text-sm text-gray-500 text-center mt-12">
+          Click an email to analyze freight entities and generate grounded reply.
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    let emails = [];
+    let activeEmail = null;
+    let currentAnalysis = null;
+
+    async function init() {
+      const res = await fetch('/api/emails');
+      emails = await res.json();
+      renderEmailList();
+      if (emails.length > 0) selectEmail(emails[0].id);
+    }
+
+    function renderEmailList() {
+      const container = document.getElementById('email-list');
+      container.innerHTML = emails.map((e) => `
+        <div onclick="selectEmail('${e.id}')"
+             id="item-${e.id}"
+             class="p-3 cursor-pointer hover:bg-blue-50 transition border-l-4 border-transparent">
+          <div class="flex justify-between items-baseline mb-1">
+            <span class="font-semibold text-sm truncate text-gray-900">${e.senderCompany}</span>
+            <span class="text-xs text-gray-400">${e.timestamp}</span>
+          </div>
+          <div class="text-xs font-medium text-gray-800 truncate">${e.subject}</div>
+          <div class="text-xs text-gray-500 truncate mt-1">${e.body.replace(/\n/g, ' ')}</div>
+        </div>
+      `).join('');
+    }
+
+    async function selectEmail(id) {
+      activeEmail = emails.find((e) => e.id === id);
+
+      document.querySelectorAll('#email-list > div').forEach((el) => el.classList.remove('bg-blue-50', 'border-blue-600'));
+      const activeEl = document.getElementById('item-' + id);
+      if (activeEl) activeEl.classList.add('bg-blue-50', 'border-blue-600');
+
+      document.getElementById('reading-pane').innerHTML = `
+        <div class="border-b pb-4 mb-4">
+          <h2 class="text-xl font-bold text-gray-900">${activeEmail.subject}</h2>
+          <div class="text-sm text-gray-600 mt-2">
+            <span class="font-semibold text-gray-800">From:</span> ${activeEmail.sender}
+          </div>
+        </div>
+        <div class="text-sm text-gray-700 whitespace-pre-line leading-relaxed flex-1">${activeEmail.body}</div>
+
+        <div class="mt-6 pt-4 border-t" id="reply-container">
+          <label class="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-2">Agent Outbox</label>
+          <textarea id="reply-box" class="w-full h-36 p-3 text-sm border rounded-md font-mono bg-gray-50 focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Draft ready to be inserted..."></textarea>
+          <div class="mt-2 flex justify-end gap-2">
+            <button onclick="sendReply()" class="px-4 py-2 bg-blue-600 text-white rounded text-sm font-semibold hover:bg-blue-700">
+              <i class="fa-solid fa-paper-plane mr-1"></i> Send to Forwarder
+            </button>
+          </div>
+        </div>
+      `;
+
+      document.getElementById('confidence-badge').innerText = 'Analyzing...';
+      const res = await fetch('/api/copilot/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ emailId: id }),
+      });
+      currentAnalysis = await res.json();
+      renderCopilot();
+    }
+
+    function renderCopilot() {
+      const pane = document.getElementById('copilot-pane');
+      document.getElementById('confidence-badge').innerText = `${Math.round(currentAnalysis.confidenceScore * 100)}% Match`;
+
+      let alertBadge = '';
+      if (currentAnalysis.fleetDoorAlert) {
+        alertBadge += `
+          <div class="bg-amber-50 border-l-4 border-amber-500 p-3 rounded text-xs text-amber-900">
+            <i class="fa-solid fa-triangle-exclamation mr-1 text-amber-600"></i>
+            <strong>Fleet Alert:</strong> ${currentAnalysis.fleetDoorAlert}
+          </div>`;
+      }
+
+      if (currentAnalysis.requiresSpecialist) {
+        alertBadge += `
+          <div class="bg-red-50 border-l-4 border-red-500 p-3 rounded text-xs text-red-900">
+            <i class="fa-solid fa-shield-halved mr-1 text-red-600"></i>
+            <strong>Specialist Desk Escalation Required:</strong> Active Pharma cold-chain protocol.
+          </div>`;
+      }
+
+      pane.innerHTML = `
+        ${alertBadge}
+
+        <div class="bg-white p-3.5 rounded-lg border border-gray-200 shadow-sm space-y-2">
+          <div class="text-xs font-bold text-gray-500 uppercase tracking-wider">Extracted Cargo Entities</div>
+          <div class="grid grid-cols-2 gap-2 text-xs">
+            <div><span class="text-gray-400">Route:</span> <span class="font-semibold">${currentAnalysis.route || '—'}</span></div>
+            <div><span class="text-gray-400">AWB:</span> <span class="font-semibold font-mono">${currentAnalysis.awb || 'N/A (Quote)'}</span></div>
+            <div><span class="text-gray-400">Origin:</span> <span class="font-semibold">${currentAnalysis.origin || '—'}</span></div>
+            <div><span class="text-gray-400">Destination:</span> <span class="font-semibold">${currentAnalysis.destination || '—'}</span></div>
+            <div><span class="text-gray-400">Pieces:</span> <span class="font-semibold">${currentAnalysis.pieces ?? '—'}</span></div>
+            <div><span class="text-gray-400">Weight:</span> <span class="font-semibold">${currentAnalysis.weightKg != null ? currentAnalysis.weightKg + ' kg' : '—'}</span></div>
+            <div><span class="text-gray-400">Volume:</span> <span class="font-semibold">${currentAnalysis.volumeCbm != null ? currentAnalysis.volumeCbm + ' cbm' : '—'}</span></div>
+            <div><span class="text-gray-400">Chargeable:</span> <span class="font-semibold">${currentAnalysis.chargeableWeightKg != null ? currentAnalysis.chargeableWeightKg + ' kg' : '—'}</span></div>
+            <div><span class="text-gray-400">Dims (cm):</span> <span class="font-semibold font-mono">${currentAnalysis.dimsInCm || '—'}</span></div>
+            <div><span class="text-gray-400">Commodity:</span> <span class="font-semibold">${currentAnalysis.commodity || '—'}</span></div>
+            <div><span class="text-gray-400">Special:</span> <span class="font-semibold">${currentAnalysis.specialCargo || '—'}</span></div>
+          </div>
+          ${currentAnalysis.cmsMilestone ? `
+            <div class="mt-2 pt-2 border-t text-xs text-blue-900 bg-blue-50 p-2 rounded">
+              <i class="fa-solid fa-satellite-dish mr-1 text-blue-600"></i> <strong>Core CMS:</strong> ${currentAnalysis.cmsMilestone}
+            </div>` : ''}
+          ${currentAnalysis.contributionNote ? `
+            <div class="mt-2 pt-2 border-t text-xs text-indigo-900 bg-indigo-50 p-2 rounded">
+              <i class="fa-solid fa-coins mr-1 text-indigo-600"></i> <strong>Contribution:</strong> ${currentAnalysis.contributionNote}
+            </div>` : ''}
+        </div>
+
+        ${currentAnalysis.calculation ? `
+        <div class="bg-white p-3.5 rounded-lg border border-gray-200 shadow-sm space-y-2">
+          <div class="flex justify-between items-center">
+            <span class="text-xs font-bold text-gray-500 uppercase tracking-wider">Contribution (${currentAnalysis.calculation.source})</span>
+            ${currentAnalysis.calculation.quote
+              ? `<span class="text-xs px-2 py-0.5 rounded font-semibold ${currentAnalysis.calculation.quote.approved ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}">${currentAnalysis.calculation.quote.approved ? 'APPROVED' : 'BELOW MARGIN'} · ${Math.round(currentAnalysis.calculation.quote.contributionMarginPct * 100)}%</span>`
+              : `<span class="text-xs px-2 py-0.5 rounded font-semibold bg-amber-100 text-amber-800">RATE NEEDED</span>`}
+          </div>
+          <div class="grid grid-cols-2 gap-2 text-xs">
+            <div><span class="text-gray-400">Chargeable:</span> <span class="font-semibold">${currentAnalysis.calculation.chargeableWeightKg} kg</span></div>
+            <div><span class="text-gray-400">Est. cost:</span> <span class="font-semibold">${currentAnalysis.calculation.estimatedCosts.total} ${currentAnalysis.calculation.currency}</span></div>
+            <div><span class="text-gray-400">Fuel/Security:</span> <span class="font-semibold">${currentAnalysis.calculation.estimatedCosts.fuelAndSecurity}</span></div>
+            <div><span class="text-gray-400">Handling:</span> <span class="font-semibold">${currentAnalysis.calculation.estimatedCosts.handling}</span></div>
+            <div><span class="text-gray-400">Trucking/RFS:</span> <span class="font-semibold">${currentAnalysis.calculation.estimatedCosts.trucking}</span></div>
+            <div><span class="text-gray-400">Min rate (15%):</span> <span class="font-semibold">${currentAnalysis.calculation.suggestedMinRatePerKg} ${currentAnalysis.calculation.currency}/kg</span></div>
+          </div>
+        </div>` : ''}
+
+        <div class="bg-white p-3.5 rounded-lg border border-gray-200 shadow-sm space-y-2">
+          <div class="flex justify-between items-center">
+            <span class="text-xs font-bold text-gray-500 uppercase tracking-wider">Generated Response</span>
+            <button onclick="insertDraft()" class="text-xs bg-blue-50 text-blue-700 px-2 py-1 rounded font-semibold hover:bg-blue-100">
+              <i class="fa-solid fa-arrow-down-left-and-arrow-up-right-to-center mr-1"></i> Insert to Reply
+            </button>
+          </div>
+          <div class="text-xs text-gray-700 bg-gray-50 p-3 rounded border font-mono whitespace-pre-line leading-normal">
+            ${currentAnalysis.suggestedDraft}
+          </div>
+        </div>
+      `;
+    }
+
+    function insertDraft() {
+      if (!currentAnalysis) return;
+      document.getElementById('reply-box').value = currentAnalysis.suggestedDraft;
+      document.getElementById('reply-box').scrollIntoView({ behavior: 'smooth' });
+    }
+
+    function sendReply() {
+      alert('Email transmitted to freight forwarder via SAS Cargo Exchange service!');
+    }
+
+    init();
+  </script>
+</body>
+</html>
