@@ -9,6 +9,7 @@ import OpenAI, { AzureOpenAI } from 'openai';
 import { DefaultAzureCredential } from '@azure/identity';
 import { getCalculation, type CalcResult } from './calculations.js';
 import { searchOffers, fetchOrder, offerOrderConfigured, type LiveOffer } from './offerAndOrder.js';
+import { lookupShipment, extractAwb, shipmentSummary } from './shipments.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -373,6 +374,13 @@ app.get('/api/orders/:id', requireApiKey, async (req: Request, res: Response) =>
   res.json(order);
 });
 
+// Live shipment tracking by AWB from the cargo dataset.
+app.get('/api/shipments/:awb', requireApiKey, (req: Request, res: Response) => {
+  const shipment = lookupShipment(String(req.params.awb));
+  if (!shipment) return res.status(404).json({ error: 'AWB not found in tracking dataset.' });
+  res.json(shipment);
+});
+
 // Grounds chargeableWeightKg deterministically and appends a suggested-rate note.
 async function enrichWithCalculations(analysis: CopilotAnalysis): Promise<CopilotAnalysis> {
   if (analysis.weightKg != null && analysis.volumeCbm != null && analysis.volumeCbm > 0) {
@@ -453,11 +461,19 @@ app.post('/api/copilot/analyze', requireApiKey, async (req: Request, res: Respon
       ? 'CMS Status for 117-84920145: Arrived CPH on SK1405 (08:45 UTC, status RCF). Booked out on SK943 to ORD (STD 15:40 UTC).'
       : 'No active AWB booked. New rate/routing inquiry.';
 
+  // Ground Track & Trace in the real cargo dataset when the email references a known AWB.
+  const awb = extractAwb(`${email.subject} ${email.body}`);
+  const shipment = awb ? lookupShipment(awb) : null;
+  const cmsData = shipment ? shipmentSummary(shipment) : mockCmsData;
+
   // 1) Prefer the governed Foundry prompt agent when configured.
   if (useFoundryAgent) {
     try {
-      const analysis = await invokeFoundryAgent(email, mockCmsData);
-      if (analysis) return res.json(await enrichWithCalculations(analysis));
+      const analysis = await invokeFoundryAgent(email, cmsData);
+      if (analysis) {
+        if (shipment) analysis.cmsMilestone = shipmentSummary(shipment);
+        return res.json(await enrichWithCalculations(analysis));
+      }
     } catch (error) {
       console.error('Foundry agent invoke failed:', error);
     }
@@ -478,7 +494,7 @@ app.post('/api/copilot/analyze', requireApiKey, async (req: Request, res: Respon
           },
           {
             role: 'user',
-            content: `INCOMING EMAIL:\nFrom: ${email.sender} (${email.senderCompany})\nSubject: ${email.subject}\nBody:\n${email.body}\n\nINTERNAL CMS DATA:\n${mockCmsData}`,
+            content: `INCOMING EMAIL:\nFrom: ${email.sender} (${email.senderCompany})\nSubject: ${email.subject}\nBody:\n${email.body}\n\nINTERNAL CMS DATA:\n${cmsData}`,
           },
         ],
       });
@@ -489,8 +505,9 @@ app.post('/api/copilot/analyze', requireApiKey, async (req: Request, res: Respon
         const analysis: CopilotAnalysis = {
           ...parsedContent,
           confidenceScore: 0.97,
-          cmsMilestone:
-            email.id === 'msg-1'
+          cmsMilestone: shipment
+            ? shipmentSummary(shipment)
+            : email.id === 'msg-1'
               ? 'RCF (Received from Flight SK1405 at CPH - 08:45 UTC)'
               : parsedContent.cmsMilestone,
         } as CopilotAnalysis;
