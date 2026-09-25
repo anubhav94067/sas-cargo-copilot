@@ -1,15 +1,14 @@
+import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import fs from 'fs';
 import https from 'https';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import dotenv from 'dotenv';
 import OpenAI, { AzureOpenAI } from 'openai';
 import { DefaultAzureCredential } from '@azure/identity';
 import { getCalculation, type CalcResult } from './calculations.js';
-
-dotenv.config();
+import { searchOffers, fetchOrder, offerOrderConfigured, type LiveOffer } from './offerAndOrder.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -49,6 +48,7 @@ export interface CopilotAnalysis {
   requiresSpecialist: boolean;
   contributionNote?: string | null;
   calculation?: CalcResult | null;
+  liveOffer?: LiveOffer | null;
   cmsMilestone?: string;
   confidenceScore: number;
   suggestedDraft: string;
@@ -357,6 +357,22 @@ app.post('/api/calculations', requireApiKey, async (req: Request, res: Response)
   res.json(result);
 });
 
+// Live SAS Cargo Offer'n'Order (Mercator) endpoints.
+app.post('/api/offers', requireApiKey, async (req: Request, res: Response) => {
+  const { origin, destination, weightKg, volumeCbm, pieces, commodity, shipByDate } = req.body || {};
+  if (!origin || !destination || typeof weightKg !== 'number' || typeof volumeCbm !== 'number') {
+    return res.status(400).json({ error: 'origin, destination, weightKg, volumeCbm are required.' });
+  }
+  const offer = await searchOffers({ origin, destination, weightKg, volumeCbm, pieces: Number(pieces) || 1, commodity, shipByDate });
+  res.json({ configured: offerOrderConfigured, offer });
+});
+
+app.get('/api/orders/:id', requireApiKey, async (req: Request, res: Response) => {
+  const order = await fetchOrder(String(req.params.id));
+  if (!order) return res.status(404).json({ error: 'Order not found or Offer\'n\'Order not configured.' });
+  res.json(order);
+});
+
 // Grounds chargeableWeightKg deterministically and appends a suggested-rate note.
 async function enrichWithCalculations(analysis: CopilotAnalysis): Promise<CopilotAnalysis> {
   if (analysis.weightKg != null && analysis.volumeCbm != null && analysis.volumeCbm > 0) {
@@ -377,6 +393,36 @@ async function enrichWithCalculations(analysis: CopilotAnalysis): Promise<Copilo
       console.error('Calculation enrichment failed:', error);
     }
   }
+
+  // Live SAS offer for rate quotes (real capacity/rate from Offer'n'Order).
+  if (
+    offerOrderConfigured &&
+    analysis.intent === 'DIMENSION_QUOTE' &&
+    analysis.origin &&
+    analysis.destination &&
+    analysis.weightKg != null &&
+    analysis.volumeCbm != null
+  ) {
+    try {
+      const offer = await searchOffers({
+        origin: analysis.origin,
+        destination: analysis.destination,
+        weightKg: analysis.weightKg,
+        volumeCbm: analysis.volumeCbm,
+        pieces: analysis.pieces || 1,
+        commodity: analysis.commodity || undefined,
+      });
+      if (offer) {
+        analysis.liveOffer = offer;
+        const flight = `${offer.carrier || ''}${offer.flightNumber || ''}`.trim();
+        const note = `Live SAS offer: ${flight} ${offer.route || ''}, journey ${offer.journeyTime || 'n/a'}, chargeable ${offer.chargeableWeightKg ?? '?'} kg (offer ${offer.offerId}, ship ${offer.shipByDate?.slice(0, 10)}). [Offer'n'Order UAT]`;
+        analysis.contributionNote = analysis.contributionNote ? `${analysis.contributionNote} ${note}` : note;
+      }
+    } catch (error) {
+      console.error('Offer search failed:', error);
+    }
+  }
+
   return analysis;
 }
 
