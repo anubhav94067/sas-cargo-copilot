@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 import OpenAI, { AzureOpenAI } from 'openai';
 import { DefaultAzureCredential } from '@azure/identity';
 import { getCalculation, type CalcResult } from './calculations.js';
-import { searchOffers, fetchOrder, offerOrderConfigured, type LiveOffer } from './offerAndOrder.js';
+import { searchOffers, fetchOrder, searchOrderByAwb, offerOrderConfigured, type LiveOffer } from './offerAndOrder.js';
 import { lookupShipment, extractAwb, shipmentSummary } from './shipments.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -381,6 +381,14 @@ app.get('/api/shipments/:awb', requireApiKey, (req: Request, res: Response) => {
   res.json(shipment);
 });
 
+// Live AWB -> order lookup (Offer'n'Order): resolves order refs, then fetches full order detail.
+app.get('/api/track/:awb', requireApiKey, async (req: Request, res: Response) => {
+  const ref = await searchOrderByAwb(String(req.params.awb));
+  if (!ref) return res.status(404).json({ error: 'AWB not found in Offer\'n\'Order or not configured.' });
+  const order = await fetchOrder(ref.orderId);
+  res.json({ ref, order });
+});
+
 // Grounds chargeableWeightKg deterministically and appends a suggested-rate note.
 async function enrichWithCalculations(analysis: CopilotAnalysis): Promise<CopilotAnalysis> {
   if (analysis.weightKg != null && analysis.volumeCbm != null && analysis.volumeCbm > 0) {
@@ -464,7 +472,19 @@ app.post('/api/copilot/analyze', requireApiKey, async (req: Request, res: Respon
   // Ground Track & Trace in the real cargo dataset when the email references a known AWB.
   const awb = extractAwb(`${email.subject} ${email.body}`);
   const shipment = awb ? lookupShipment(awb) : null;
-  const cmsData = shipment ? shipmentSummary(shipment) : mockCmsData;
+  let cmsData = shipment ? shipmentSummary(shipment) : mockCmsData;
+
+  // Fall back to live Offer'n'Order order search for AWBs not in the local dataset.
+  if (!shipment && awb && offerOrderConfigured) {
+    try {
+      const ref = await searchOrderByAwb(awb);
+      if (ref) {
+        cmsData = `CMS tracking for AWB ${awb}: order ${ref.orderNumber} (booking ${ref.bookingReferenceNumber}, JRN ${ref.jobReferenceNumber}), route ${ref.route || 'n/a'}, latest milestone ${ref.movementStatus}. [Offer'n'Order UAT]`;
+      }
+    } catch (error) {
+      console.error('Live order search failed:', error);
+    }
+  }
 
   // 1) Prefer the governed Foundry prompt agent when configured.
   if (useFoundryAgent) {

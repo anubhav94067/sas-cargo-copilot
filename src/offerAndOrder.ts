@@ -199,3 +199,50 @@ export async function fetchOrder(orderId: string): Promise<unknown | null> {
   if (r.status !== 200) return null;
   return JSON.parse(r.text);
 }
+
+export interface OrderRef {
+  orderId: string;
+  orderNumber?: string;
+  bookingReferenceNumber?: string;
+  jobReferenceNumber?: string;
+  documentNumber?: string;
+  route?: string;
+  movementStatus?: string;
+}
+
+// Maps an AWB to its order references (replicates the SAS Cargo customer app shipment search).
+export async function searchOrderByAwb(awb: string): Promise<OrderRef | null> {
+  if (!offerOrderConfigured) return null;
+  const token = await getToken();
+  const docNo = (awb || '').replace(/[^0-9]/g, '');
+  if (!docNo) return null;
+  const body = JSON.stringify({
+    orderFilter: { airCapacity: { documentNumbers: [docNo], includeItinerary: false } },
+    pageRequest: { page: 1, pageSize: 10 },
+  });
+  const r = await request(
+    'POST',
+    `${BASE}/api/order/services/cargo/v1/orders/actions/search?view=summary`,
+    {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      'app-id': APP_ID,
+      'Content-Length': String(Buffer.byteLength(body)),
+    },
+    body,
+  );
+  if (r.status !== 200) return null;
+  const d = JSON.parse(r.text);
+  const bref = deepFind(d, 'bookingReferenceNumber');
+  if (!bref) return null;
+  const ms = deepFind(d, 'movementStatus') as { code?: string } | string | undefined;
+  return {
+    orderId: `b${bref}`,
+    orderNumber: deepFind(d, 'orderNumber') as string | undefined,
+    bookingReferenceNumber: String(bref),
+    jobReferenceNumber: deepFind(d, 'jobReferenceNumber') as string | undefined,
+    documentNumber: deepFind(d, 'documentNumber') as string | undefined,
+    route: deepFind(d, 'route') as string | undefined,
+    movementStatus: typeof ms === 'object' ? ms?.code : ms,
+  };
+}
