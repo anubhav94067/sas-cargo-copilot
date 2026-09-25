@@ -26,8 +26,30 @@ export interface Shipment {
   customerCountry: string;
   irregularityCount: number;
   irregularityCodes: string;
+  cancelReasonCode: string;
+  cancelRemark: string;
   lastDepartureStation: string;
 }
+
+export interface ShipmentException {
+  flagged: boolean;
+  severity: 'high' | 'medium' | 'low';
+  codes: string;
+  description: string;
+  remark?: string;
+}
+
+const IRR_DESC: Record<string, string> = {
+  DIMNOTCAPT: 'Dimensions not captured',
+  AWBSBHRIRR: 'Shipment handling irregularity',
+  EUCSTMHOLD: 'EU customs hold',
+  CWTMISMTCH: 'Chargeable weight mismatch',
+};
+
+const CNCL_DESC: Record<string, string> = {
+  MX: 'Administrative update',
+  CT: 'Cargo rebooked (not on the planned flight)',
+};
 
 const MILESTONE: Record<string, string> = {
   BKD: 'Booked',
@@ -71,6 +93,8 @@ function load(): Map<string, Shipment> {
       country: col('customer_country'),
       irrCount: col('irregularity_count'),
       irrCodes: col('irregularity_codes'),
+      cnclCode: col('CNCL_RSN_CODE'),
+      cnclRmk: col('CNCL_RMK'),
       lastDep: col('LastDepartureStationCode'),
     };
     for (let i = 1; i < lines.length; i++) {
@@ -96,6 +120,8 @@ function load(): Map<string, Shipment> {
         customerCountry: f[idx.country],
         irregularityCount: Number(f[idx.irrCount]) || 0,
         irregularityCodes: f[idx.irrCodes] === 'NULL' ? '' : f[idx.irrCodes],
+        cancelReasonCode: f[idx.cnclCode] === 'NULL' ? '' : f[idx.cnclCode],
+        cancelRemark: f[idx.cnclRmk] === 'NULL' ? '' : f[idx.cnclRmk],
         lastDepartureStation: f[idx.lastDep],
       });
     }
@@ -117,10 +143,34 @@ export function extractAwb(text: string): string | null {
   return m ? m[0] : null;
 }
 
+// Detects a shipment exception (irregularity or rebooking/cancellation) for red-flag alerts.
+export function shipmentException(s: Shipment): ShipmentException | null {
+  const irrCodes = s.irregularityCount > 0 && s.irregularityCodes
+    ? s.irregularityCodes.split(/[,;]/).map((c) => c.trim()).filter(Boolean)
+    : [];
+  const hasCancel = Boolean(s.cancelReasonCode);
+  if (irrCodes.length === 0 && !hasCancel) return null;
+
+  const parts = irrCodes.map((c) => IRR_DESC[c] || c);
+  if (s.cancelReasonCode) parts.push(CNCL_DESC[s.cancelReasonCode] || s.cancelReasonCode);
+
+  const high = irrCodes.some((c) => c === 'EUCSTMHOLD' || c === 'AWBSBHRIRR') || s.cancelReasonCode === 'CT';
+  const severity: ShipmentException['severity'] = high ? 'high' : irrCodes.length ? 'medium' : 'low';
+
+  return {
+    flagged: true,
+    severity,
+    codes: [s.irregularityCodes, s.cancelReasonCode].filter((c) => c).join(', '),
+    description: parts.join('; ') || 'Exception on shipment',
+    remark: s.cancelRemark || undefined,
+  };
+}
+
 // Grounding line fed to the agent as INTERNAL CMS DATA.
 export function shipmentSummary(s: Shipment): string {
   const milestone = MILESTONE[s.movementStatus] || s.movementStatus;
-  const irr = s.irregularityCount > 0 ? ` Irregularity flagged: ${s.irregularityCodes} (${s.irregularityCount}).` : '';
+  const exc = shipmentException(s);
+  const irr = exc ? ` EXCEPTION (${exc.severity}): ${exc.description}${exc.remark ? ' — ' + exc.remark : ''}.` : '';
   return (
     `CMS tracking for AWB ${s.awb}: ${s.origin}-${s.destination} on ${s.airline}${s.flightNumber}, ` +
     `${s.pieces} pcs / ${s.weightKg} kg. Latest milestone ${s.movementStatus} (${milestone}); ` +

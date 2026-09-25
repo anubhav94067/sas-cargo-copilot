@@ -119,6 +119,16 @@
       document.getElementById('confidence-badge').innerText = `${Math.round(currentAnalysis.confidenceScore * 100)}% Match`;
 
       let alertBadge = '';
+      if (currentAnalysis.exception && currentAnalysis.exception.flagged) {
+        const exc = currentAnalysis.exception;
+        const sev = exc.severity === 'high' ? 'bg-red-100 border-red-600 text-red-900' : exc.severity === 'medium' ? 'bg-orange-50 border-orange-500 text-orange-900' : 'bg-yellow-50 border-yellow-500 text-yellow-900';
+        alertBadge += `
+          <div class="${sev} border-l-4 p-3 rounded text-xs">
+            <i class="fa-solid fa-triangle-exclamation mr-1"></i>
+            <strong>Shipment Exception (${exc.severity.toUpperCase()}):</strong> ${exc.description}${exc.remark ? ' — ' + exc.remark : ''}
+            <div class="mt-1 font-mono text-[10px] opacity-70">Codes: ${exc.codes}</div>
+          </div>`;
+      }
       if (currentAnalysis.fleetDoorAlert) {
         alertBadge += `
           <div class="bg-amber-50 border-l-4 border-amber-500 p-3 rounded text-xs text-amber-900">

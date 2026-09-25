@@ -70,6 +70,10 @@
     function render(a) {
       currentDraft = a.suggestedDraft || '';
       const alerts = [];
+      if (a.exception && a.exception.flagged) {
+        const sev = a.exception.severity === 'high' ? 'bg-red-100 border-red-600 text-red-900' : a.exception.severity === 'medium' ? 'bg-orange-50 border-orange-500 text-orange-900' : 'bg-yellow-50 border-yellow-500 text-yellow-900';
+        alerts.push(`<div class="${sev} border-l-4 p-2 rounded text-xs"><strong>Exception (${a.exception.severity.toUpperCase()}):</strong> ${a.exception.description}${a.exception.remark ? ' — ' + a.exception.remark : ''}</div>`);
+      }
       if (a.fleetDoorAlert) {
         alerts.push(`<div class="bg-amber-50 border-l-4 border-amber-500 p-2 rounded text-xs text-amber-900"><strong>Fleet:</strong> ${a.fleetDoorAlert}</div>`);
       }

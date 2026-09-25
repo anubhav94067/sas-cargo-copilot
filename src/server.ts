@@ -9,7 +9,7 @@ import OpenAI, { AzureOpenAI } from 'openai';
 import { DefaultAzureCredential } from '@azure/identity';
 import { getCalculation, type CalcResult } from './calculations.js';
 import { searchOffers, fetchOrder, searchOrderByAwb, offerOrderConfigured, type LiveOffer } from './offerAndOrder.js';
-import { lookupShipment, extractAwb, shipmentSummary } from './shipments.js';
+import { lookupShipment, extractAwb, shipmentSummary, shipmentException, type ShipmentException } from './shipments.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -50,6 +50,7 @@ export interface CopilotAnalysis {
   contributionNote?: string | null;
   calculation?: CalcResult | null;
   liveOffer?: LiveOffer | null;
+  exception?: ShipmentException | null;
   cmsMilestone?: string;
   confidenceScore: number;
   suggestedDraft: string;
@@ -378,7 +379,7 @@ app.get('/api/orders/:id', requireApiKey, async (req: Request, res: Response) =>
 app.get('/api/shipments/:awb', requireApiKey, (req: Request, res: Response) => {
   const shipment = lookupShipment(String(req.params.awb));
   if (!shipment) return res.status(404).json({ error: 'AWB not found in tracking dataset.' });
-  res.json(shipment);
+  res.json({ ...shipment, exception: shipmentException(shipment) });
 });
 
 // Live AWB -> order lookup (Offer'n'Order): resolves order refs, then fetches full order detail.
@@ -491,7 +492,10 @@ app.post('/api/copilot/analyze', requireApiKey, async (req: Request, res: Respon
     try {
       const analysis = await invokeFoundryAgent(email, cmsData);
       if (analysis) {
-        if (shipment) analysis.cmsMilestone = shipmentSummary(shipment);
+        if (shipment) {
+          analysis.cmsMilestone = shipmentSummary(shipment);
+          analysis.exception = shipmentException(shipment);
+        }
         return res.json(await enrichWithCalculations(analysis));
       }
     } catch (error) {
@@ -532,6 +536,7 @@ app.post('/api/copilot/analyze', requireApiKey, async (req: Request, res: Respon
               : parsedContent.cmsMilestone,
         } as CopilotAnalysis;
 
+        if (shipment) analysis.exception = shipmentException(shipment);
         return res.json(await enrichWithCalculations(analysis));
       }
     }
